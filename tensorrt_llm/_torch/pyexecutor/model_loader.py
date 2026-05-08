@@ -13,6 +13,8 @@ from tensorrt_llm._utils import str_dtype_to_torch
 from tensorrt_llm.llmapi.llm_args import (ExecutorMemoryType,
                                           ModelExpressConfig, TorchLlmArgs)
 from tensorrt_llm.llmapi.llm_utils import apply_model_defaults_to_llm_args
+from tensorrt_llm.llmapi.model_config_loader import (load_model_defaults,
+                                                     merge_model_defaults)
 from tensorrt_llm.logger import logger
 from tensorrt_llm.lora_helper import LoraConfig
 from tensorrt_llm.mapping import Mapping
@@ -299,16 +301,22 @@ class ModelLoader:
 
         model_cls = AutoModelForCausalLM._resolve_class(config)
 
+        # Static defaults from <arch>.yaml, dynamic defaults from model code.
         # model_cls is None when the architecture is unknown/unsupported.
-        if model_cls and hasattr(model_cls, 'get_model_defaults'):
-            model_defaults = model_cls.get_model_defaults(llm_args)
-            if model_defaults:
-                applied_defaults = apply_model_defaults_to_llm_args(
-                    llm_args, model_defaults)
-                if applied_defaults:
-                    logger.info(
-                        f"Applied model defaults for {model_cls.__name__}: {applied_defaults}"
-                    )
+        architectures = getattr(config.pretrained_config, 'architectures',
+                                None) or []
+        arch = architectures[0] if architectures else None
+        yaml_defaults = load_model_defaults(arch) if arch else {}
+        code_defaults = (model_cls.get_model_defaults(llm_args) if model_cls
+                         and hasattr(model_cls, 'get_model_defaults') else {})
+        merged_defaults = merge_model_defaults(yaml_defaults, code_defaults)
+        if merged_defaults:
+            applied_defaults = apply_model_defaults_to_llm_args(
+                llm_args, merged_defaults)
+            if applied_defaults:
+                label = model_cls.__name__ if model_cls is not None else arch
+                logger.info("Applied model defaults for %s: %s", label,
+                            applied_defaults)
 
         return llm_args
 
